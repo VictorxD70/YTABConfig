@@ -1,3 +1,4 @@
+#import <rootless.h>
 #import "../YouTubeHeader/YTAlertView.h"
 #import "../YouTubeHeader/YTAppDelegate.h"
 #import "../YouTubeHeader/YTCommonUtils.h"
@@ -22,11 +23,11 @@
 #define _LOC(b, x) [b localizedStringForKey:x value:nil table:nil]
 #define LOC(x) _LOC(tweakBundle, x)
 
+static const NSInteger YTABCSection = 404;
+
 @interface YTSettingsSectionItemManager (YTABConfig)
 - (void)updateYTABCSectionWithEntry:(id)entry;
 @end
-
-static const NSInteger YTABCSection = 404;
 
 NSMutableDictionary <NSString *, NSMutableDictionary <NSString *, NSNumber *> *> *cache;
 NSUserDefaults *defaults;
@@ -59,6 +60,10 @@ static void setValue(NSString *method, NSString *classKey, BOOL value) {
     [defaults setBool:value forKey:getKey(method, classKey)];
 }
 
+static void updateAllKeys() {
+    allKeys = [defaults dictionaryRepresentation].allKeys;
+}
+
 static BOOL returnFunction(id const self, SEL _cmd) {
     NSString *method = NSStringFromSelector(_cmd);
     NSString *methodKey = getKey(method, NSStringFromClass([self class]));
@@ -80,11 +85,8 @@ NSBundle *YTABCBundle() {
         NSString *tweakBundlePath = [[NSBundle mainBundle] pathForResource:@"YTABC" ofType:@"bundle"];
         if (tweakBundlePath)
             bundle = [NSBundle bundleWithPath:tweakBundlePath];
-        else {
-            bundle = [NSBundle bundleWithPath:@"/Library/Application Support/YTABC.bundle"];
-            if (!bundle)
-                bundle = [NSBundle bundleWithPath:@"/var/jb/Library/Application Support/YTABC.bundle"];
-        }
+        else
+            bundle = [NSBundle bundleWithPath:ROOT_PATH_NS(@"/Library/Application Support/YTABC.bundle")];
     });
     return bundle;
 }
@@ -146,7 +148,8 @@ static NSString *getCategory(char c, NSString *method) {
         if ([method hasPrefix:@"shorts"]) return @"shorts";
         if ([method hasPrefix:@"should"]) return @"should";
     }
-    return [NSString stringWithFormat:@"%c", c]; // FIXME: Yike -stringWithFormat:
+    unichar uc = (unichar)c;
+    return [NSString stringWithCharacters:&uc length:1];;
 }
 
 %hook YTSettingsSectionItemManager
@@ -159,6 +162,7 @@ static NSString *getCategory(char c, NSString *method) {
     BOOL isPhone = ![%c(YTCommonUtils) isIPad];
     NSString *yesText = _LOC([NSBundle mainBundle], @"settings.yes");
     NSString *cancelText = _LOC([NSBundle mainBundle], @"confirm.cancel");
+    NSString *deleteText = _LOC([NSBundle mainBundle], @"search.action.delete");
     Class YTSettingsSectionItemClass = %c(YTSettingsSectionItem);
     Class YTAlertViewClass = %c(YTAlertView);
     if (tweakEnabled()) {
@@ -168,6 +172,7 @@ static NSString *getCategory(char c, NSString *method) {
                 char c = tolower([method characterAtIndex:0]);
                 NSString *category = getCategory(c, method);
                 if (![properties objectForKey:category]) properties[category] = [NSMutableArray array];
+                updateAllKeys();
                 BOOL modified = [allKeys containsObject:getKey(method, classKey)];
                 NSString *modifiedTitle = modified ? [NSString stringWithFormat:@"%@ *", method] : method;
                 YTSettingsSectionItem *methodSwitch = [YTSettingsSectionItemClass switchItemWithTitle:modifiedTitle
@@ -178,13 +183,28 @@ static NSString *getCategory(char c, NSString *method) {
                         setValue(method, classKey, enabled);
                         return YES;
                     }
-                    // selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
-                    //     YTAlertView *alertView = [YTAlertViewClass infoDialog];
-                    //     alertView.title = method;
-                    //     alertView.subtitle = [NSString stringWithFormat:@"-[%@ %@]", classKey, method];
-                    //     [alertView show];
-                    //     return YES;
-                    // }
+                    selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
+                        NSString *content = [NSString stringWithFormat:@"%@.%@", classKey, method];
+                        YTAlertView *alertView = [YTAlertViewClass confirmationDialog];
+                        alertView.title = method;
+                        alertView.subtitle = content;
+                        [alertView addTitle:LOC(@"COPY_TO_CLIPBOARD") withAction:^{
+                            UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+                            pasteboard.string = content;
+                            [[%c(YTToastResponderEvent) eventWithMessage:LOC(@"COPIED_TO_CLIPBOARD") firstResponder:[self parentResponder]] send];
+                        }];
+                        updateAllKeys();
+                        NSString *key = getKey(method, classKey);
+                        if ([allKeys containsObject:key]) {
+                            [alertView addTitle:deleteText withAction:^{
+                                [defaults removeObjectForKey:key];
+                                updateAllKeys();
+                            }];
+                        }
+                        [alertView addCancelButton:NULL];
+                        [alertView show];
+                        return NO;
+                    }
                     settingItemId:0];
                 [properties[category] addObject:methodSwitch];
             }
@@ -192,7 +212,7 @@ static NSString *getCategory(char c, NSString *method) {
         YTSettingsViewController *settingsViewController = [self valueForKey:@"_settingsViewControllerDelegate"];
         BOOL grouped = groupedSettings();
         for (NSString *category in properties) {
-            NSMutableArray *rows = properties[category];
+            NSMutableArray <YTSettingsSectionItem *> *rows = properties[category];
             totalSettings += rows.count;
             if (grouped) {
                 NSSortDescriptor *sort = [NSSortDescriptor sortDescriptorWithKey:@"title" ascending:YES];
@@ -240,6 +260,7 @@ static NSString *getCategory(char c, NSString *method) {
             detailTextBlock:nil
             selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
                 NSMutableArray *features = [NSMutableArray array];
+                updateAllKeys();
                 for (NSString *key in allKeys) {
                     if ([key hasPrefix:Prefix]) {
                         NSString *displayKey = [key substringFromIndex:Prefix.length + 1];
@@ -266,6 +287,7 @@ static NSString *getCategory(char c, NSString *method) {
             detailTextBlock:nil
             selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
                 YTAlertView *alertView = [YTAlertViewClass confirmationDialogWithAction:^{
+                    updateAllKeys();
                     for (NSString *key in allKeys) {
                         if ([key hasPrefix:Prefix])
                             [defaults removeObjectForKey:key];
@@ -381,8 +403,8 @@ static void hookClass(NSObject *instance) {
 
 - (BOOL)application:(id)arg1 didFinishLaunchingWithOptions:(id)arg2 {
     defaults = [NSUserDefaults standardUserDefaults];
-    allKeys = [defaults dictionaryRepresentation].allKeys;
     if (tweakEnabled()) {
+        updateAllKeys();
         YTGlobalConfig *globalConfig;
         YTColdConfig *coldConfig;
         YTHotConfig *hotConfig;
